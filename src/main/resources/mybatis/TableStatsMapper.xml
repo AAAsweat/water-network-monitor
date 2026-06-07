@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.watermonitor.dao.TableStatsMapper">
+
+    <select id="getRowCount" resultType="long">
+        SELECT row_count FROM table_stats WHERE table_name = #{tableName}
+    </select>
+
+    <insert id="upsertRowCount">
+        INSERT INTO table_stats (table_name, row_count, update_time)
+        VALUES (#{tableName}, #{rowCount}, NOW())
+        ON DUPLICATE KEY UPDATE
+            row_count = VALUES(row_count),
+            update_time = NOW()
+    </insert>
+
+</mapper>

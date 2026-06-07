@@ -1,0 +1,209 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.watermonitor.dao.PipeFlowMapper">
+
+    <!-- 批量插入 -->
+    <insert id="batchInsert" parameterType="list">
+        INSERT INTO pipe_flow_record (pipe_no, pipe_name, monitor_date, monitor_hour,
+                                      flow_rate, water_pressure, anomaly_level, water_quality)
+        VALUES
+        <foreach collection="list" item="item" separator=",">
+            (#{item.pipeNo}, #{item.pipeName}, #{item.monitorDate},
+             #{item.monitorHour}, #{item.flowRate}, #{item.waterPressure},
+             #{item.anomalyLevel}, #{item.waterQuality})
+        </foreach>
+    </insert>
+
+    <!-- 按时间段统计总水流量 -->
+    <select id="sumFlowByDateRange" resultType="map">
+        SELECT monitor_date AS monitorDate,
+               SUM(flow_rate) AS totalFlow,
+               AVG(flow_rate) AS avgFlow,
+               AVG(water_pressure) AS avgPressure
+        FROM pipe_flow_record
+        WHERE monitor_date BETWEEN #{startDate} AND #{endDate}
+        <if test="pipeNo != null and pipeNo != ''">
+            AND pipe_no = #{pipeNo}
+        </if>
+        GROUP BY monitor_date
+        ORDER BY monitor_date
+    </select>
+
+    <!-- 按管网统计水流量 -->
+    <select id="sumFlowByPipe" resultType="map">
+        SELECT pipe_no AS pipeNo, pipe_name AS pipeName,
+               SUM(flow_rate) AS totalFlow,
+               AVG(flow_rate) AS avgFlow,
+               COUNT(*) AS recordCount
+        FROM pipe_flow_record
+        WHERE monitor_date BETWEEN #{startDate} AND #{endDate}
+        GROUP BY pipe_no, pipe_name
+        ORDER BY totalFlow DESC
+        LIMIT 20
+    </select>
+
+    <!-- 异常等级占比统计 -->
+    <select id="anomalyLevelStats" resultType="map">
+        SELECT anomaly_level AS anomalyLevel,
+               COUNT(*) AS count,
+               ROUND(COUNT(*) * 100.0 / (SELECT COUNT(*) FROM pipe_flow_record
+                    WHERE monitor_date BETWEEN #{startDate} AND #{endDate}), 2) AS percentage
+        FROM pipe_flow_record
+        WHERE monitor_date BETWEEN #{startDate} AND #{endDate}
+        GROUP BY anomaly_level
+        ORDER BY anomaly_level
+    </select>
+
+    <!-- 工作日/周末流量对比 -->
+    <select id="weekdayVsWeekendFlow" resultType="map">
+        SELECT
+            CASE WHEN DAYOFWEEK(monitor_date) IN (1, 7) THEN '周末' ELSE '工作日' END AS dayType,
+            SUM(flow_rate) AS totalFlow,
+            AVG(flow_rate) AS avgFlow,
+            COUNT(DISTINCT monitor_date) AS dayCount
+        FROM pipe_flow_record
+        WHERE monitor_date BETWEEN #{startDate} AND #{endDate}
+        GROUP BY dayType
+        ORDER BY dayType
+    </select>
+
+    <!-- 各小时平均流量 -->
+    <select id="hourlyAvgFlow" resultType="map">
+        SELECT monitor_hour AS monitorHour,
+               AVG(flow_rate) AS avgFlow,
+               MAX(flow_rate) AS maxFlow,
+               MIN(flow_rate) AS minFlow
+        FROM pipe_flow_record
+        WHERE monitor_date BETWEEN #{startDate} AND #{endDate}
+        GROUP BY monitor_hour
+        ORDER BY monitor_hour
+    </select>
+
+    <!-- 获取最新记录 -->
+    <select id="getLatestRecords" resultType="com.watermonitor.entity.PipeFlowRecord">
+        SELECT * FROM pipe_flow_record
+        ORDER BY monitor_date DESC, monitor_hour DESC
+        LIMIT #{limit}
+    </select>
+
+    <!-- 总记录数 -->
+    <select id="countAll" resultType="long">
+        SELECT COUNT(*) FROM pipe_flow_record
+    </select>
+
+    <!-- 获取历史流量用于预测 -->
+    <select id="getHistoryFlowForPredict" resultType="map">
+        SELECT monitor_date AS monitorDate, monitor_hour AS monitorHour,
+               flow_rate AS flowRate
+        FROM pipe_flow_record
+        WHERE pipe_no = #{pipeNo}
+        ORDER BY monitor_date DESC, monitor_hour DESC
+        LIMIT #{limit}
+    </select>
+
+    <!-- 获取某管网各小时平均流量（用于AI预测训练） -->
+    <select id="getRecentHourlyAvgForPipe" resultType="map">
+        SELECT monitor_hour AS monitorHour,
+               AVG(flow_rate) AS avgFlow
+        FROM pipe_flow_record
+        WHERE pipe_no = #{pipeNo}
+        GROUP BY monitor_hour
+        ORDER BY monitor_hour
+    </select>
+
+    <!-- 多管网流量对比 -->
+    <select id="multiPipeCompare" resultType="map">
+        SELECT pipe_no AS pipeNo, pipe_name AS pipeName,
+               SUM(flow_rate) AS totalFlow,
+               AVG(flow_rate) AS avgFlow
+        FROM pipe_flow_record
+        WHERE monitor_date BETWEEN #{startDate} AND #{endDate}
+        AND pipe_no IN
+        <foreach collection="pipeNos" item="pn" open="(" separator="," close=")">
+            #{pn}
+        </foreach>
+        GROUP BY pipe_no, pipe_name
+        ORDER BY totalFlow DESC
+    </select>
+
+    <!-- 获取所有管网编号 -->
+    <select id="getAllPipeNos" resultType="string">
+        SELECT DISTINCT pipe_no FROM pipe_flow_record ORDER BY pipe_no
+    </select>
+
+    <!-- ====== 聚合表查询（避免大表全扫） ====== -->
+
+    <!-- 日流量趋势（按日期汇总所有管网的daily_flow_summary） -->
+    <select id="dailyFlowByDateRange" resultType="map">
+        SELECT monitor_date AS monitorDate,
+               SUM(total_flow) AS totalFlow,
+               AVG(avg_flow) AS avgFlow,
+               AVG(avg_pressure) AS avgPressure
+        FROM daily_flow_summary
+        WHERE monitor_date BETWEEN #{startDate} AND #{endDate}
+        <if test="pipeNo != null and pipeNo != ''">
+            AND pipe_no = #{pipeNo}
+        </if>
+        GROUP BY monitor_date
+        ORDER BY monitor_date
+    </select>
+
+    <!-- 异常占比（从日汇总表聚合） -->
+    <select id="anomalyStatsFromDaily" resultType="map">
+        SELECT 0 AS anomalyLevel, SUM(anomaly_0) AS count FROM daily_flow_summary
+        WHERE monitor_date BETWEEN #{startDate} AND #{endDate}
+        UNION ALL
+        SELECT 1, SUM(anomaly_1) FROM daily_flow_summary
+        WHERE monitor_date BETWEEN #{startDate} AND #{endDate}
+        UNION ALL
+        SELECT 2, SUM(anomaly_2) FROM daily_flow_summary
+        WHERE monitor_date BETWEEN #{startDate} AND #{endDate}
+        UNION ALL
+        SELECT 3, SUM(anomaly_3) FROM daily_flow_summary
+        WHERE monitor_date BETWEEN #{startDate} AND #{endDate}
+    </select>
+
+    <!-- 各小时平均流量（从小时汇总表） -->
+    <select id="hourlyFlowStats" resultType="map">
+        SELECT monitor_hour AS monitorHour,
+               AVG(avg_flow) AS avgFlow,
+               MAX(max_flow) AS maxFlow
+        FROM hourly_flow_summary
+        WHERE pipe_no IN
+        <foreach collection="pipeNos" item="pn" open="(" separator="," close=")">
+            #{pn}
+        </foreach>
+        GROUP BY monitor_hour
+        ORDER BY monitor_hour
+    </select>
+
+    <!-- 工作日/周末对比（从日汇总表，用DAYOFWEEK区分） -->
+    <select id="weekdayVsWeekendFromDaily" resultType="map">
+        SELECT
+            CASE WHEN DAYOFWEEK(monitor_date) IN (1, 7) THEN '周末' ELSE '工作日' END AS dayType,
+            SUM(total_flow) AS totalFlow,
+            AVG(avg_flow) AS avgFlow,
+            COUNT(DISTINCT monitor_date) AS dayCount
+        FROM daily_flow_summary
+        WHERE monitor_date BETWEEN #{startDate} AND #{endDate}
+        GROUP BY dayType
+        ORDER BY dayType
+    </select>
+
+    <!-- 多管网对比（从日汇总表聚合，不带pipe_name，Java补） -->
+    <select id="multiPipeFromDaily" resultType="map">
+        SELECT pipe_no AS pipeNo,
+               SUM(total_flow) AS totalFlow,
+               AVG(avg_flow) AS avgFlow
+        FROM daily_flow_summary
+        WHERE monitor_date BETWEEN #{startDate} AND #{endDate}
+        AND pipe_no IN
+        <foreach collection="pipeNos" item="pn" open="(" separator="," close=")">
+            #{pn}
+        </foreach>
+        GROUP BY pipe_no
+        ORDER BY totalFlow DESC
+    </select>
+
+</mapper>
